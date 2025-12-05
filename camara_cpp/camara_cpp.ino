@@ -1,19 +1,17 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include "esp_camera.h"
-#include <WiFiClientSecure.h>
 
 // =============================================
-// CONFIGURACIÓN - RELLENA CON TUS DATOS
+// CONFIGURACIÓN SIMPLE Y DIRECTA
 // =============================================
-const char* ssid = "TU_RED_WIFI";
-const char* password = "TU_PASSWORD_WIFI";
-const char* serverURL = "http://IP_DE_TU_PC:5000/upload";
-const char* serverHost = "IP_DE_TU_PC"; // Solo IP, sin http://
+const char* ssid = "IPM-Wifi";
+const char* password = "ipm-wifi";
+const char* serverIP = "172.16.1.149";  // Tu IP actual
 const int serverPort = 5000;
 
 // =============================================
-// CONFIGURACIÓN PINES ESP32-CAM (AI-Thinker)
+// PINES ESP32-CAM
 // =============================================
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
@@ -36,70 +34,97 @@ const int serverPort = 5000;
 // VARIABLES GLOBALES
 // =============================================
 unsigned long lastCaptureTime = 0;
-const unsigned long CAPTURE_INTERVAL = 10000; // 10 segundos
+const unsigned long CAPTURE_INTERVAL = 15000; // 15 segundos
 int failedAttempts = 0;
-const int MAX_FAILED_ATTEMPTS = 5;
 
 // =============================================
 // SETUP
 // =============================================
 void setup() {
   Serial.begin(115200);
-  Serial.setDebugOutput(true);
-  Serial.println();
-  Serial.println("🚀 Iniciando ESP32-CAM Traductor...");
+  delay(1000);
   
-  // Conectar WiFi con reintentos
-  if (!connectWiFi()) {
-    Serial.println("❌ Error crítico: No se pudo conectar a WiFi");
-    return;
-  }
+  Serial.println("\n\n🚀 ESP32-CAM TRADUCTOR");
+  Serial.println("=====================\n");
   
-  // Inicializar cámara
-  if (!initCamera()) {
-    Serial.println("❌ Error crítico: No se pudo inicializar la cámara");
-    return;
-  }
-  
-  Serial.println("✅ ESP32-CAM inicializada correctamente");
-  Serial.println("📡 Lista para enviar imágenes al servidor");
-}
-
-// =============================================
-// CONEXIÓN WiFi CON REINTENTOS
-// =============================================
-bool connectWiFi() {
-  Serial.print("📡 Conectando a WiFi: ");
-  Serial.println(ssid);
-  
+  // 1. Conectar WiFi
+  Serial.println("📡 Conectando WiFi...");
   WiFi.begin(ssid, password);
   
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(1000);
+    delay(500);
     Serial.print(".");
     attempts++;
   }
   
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println();
-    Serial.println("✅ WiFi conectado!");
-    Serial.print("📍 IP Address: ");
+    Serial.println("\n✅ WiFi CONECTADO");
+    Serial.print("📍 IP Local: ");
     Serial.println(WiFi.localIP());
-    return true;
+    Serial.print("🌐 Servidor: ");
+    Serial.print(serverIP);
+    Serial.print(":");
+    Serial.println(serverPort);
   } else {
-    Serial.println();
-    Serial.println("❌ Fallo la conexión WiFi");
-    return false;
+    Serial.println("\n❌ WiFi FALLÓ");
+    ESP.restart();
   }
+  
+  // 2. Inicializar cámara
+  Serial.println("\n📷 Inicializando cámara...");
+  if (!initCamera()) {
+    Serial.println("❌ Cámara falló - Reiniciando...");
+    ESP.restart();
+  }
+  
+  // 3. Probar servidor
+  Serial.println("\n🔍 Probando servidor...");
+  testServer();
+  
+  Serial.println("\n✅ Sistema listo!");
+  Serial.println("=====================\n");
 }
 
 // =============================================
-// INICIALIZACIÓN DE CÁMARA
+// LOOP PRINCIPAL
+// =============================================
+void loop() {
+  static unsigned long lastStatus = 0;
+  
+  // Verificar WiFi
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("⚠️  Reconectando WiFi...");
+    WiFi.reconnect();
+    delay(3000);
+    return;
+  }
+  
+  // Enviar foto cada intervalo
+  if (millis() - lastCaptureTime >= CAPTURE_INTERVAL) {
+    captureAndSend();
+    lastCaptureTime = millis();
+  }
+  
+  // Mostrar estado cada 10 segundos
+  if (millis() - lastStatus >= 10000) {
+    Serial.print("📊 Estado: WiFi=");
+    Serial.print(WiFi.status() == WL_CONNECTED ? "OK" : "NO");
+    Serial.print(", RSSI=");
+    Serial.print(WiFi.RSSI());
+    Serial.print("dBm, Próxima=");
+    Serial.print((CAPTURE_INTERVAL - (millis() - lastCaptureTime)) / 1000);
+    Serial.println("s");
+    lastStatus = millis();
+  }
+  
+  delay(1000);
+}
+
+// =============================================
+// INICIALIZAR CÁMARA
 // =============================================
 bool initCamera() {
-  Serial.println("📷 Inicializando cámara...");
-  
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -122,238 +147,127 @@ bool initCamera() {
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
   
-  // Configuración según memoria disponible
   if(psramFound()){
-    config.frame_size = FRAMESIZE_SVGA;  // 800x600
-    config.jpeg_quality = 10;
-    config.fb_count = 2;
-    Serial.println("✅ PSRAM detectada - Calidad alta");
-  } else {
-    config.frame_size = FRAMESIZE_VGA;   // 640x480
+    config.frame_size = FRAMESIZE_VGA;
     config.jpeg_quality = 12;
+    config.fb_count = 2;
+  } else {
+    config.frame_size = FRAMESIZE_VGA;
+    config.jpeg_quality = 15;
     config.fb_count = 1;
-    Serial.println("⚠️  Sin PSRAM - Calidad media");
   }
   
-  // Inicializar cámara
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
-    Serial.printf("❌ Error inicializando cámara: 0x%x\n", err);
+    Serial.printf("Error cámara: 0x%x\n", err);
     return false;
   }
-  
-  // Test rápido de la cámara
-  camera_fb_t * test_fb = esp_camera_fb_get();
-  if (!test_fb) {
-    Serial.println("❌ Error en test de cámara - No se pudo capturar imagen");
-    return false;
-  }
-  Serial.printf("✅ Test cámara OK - Imagen: %d bytes\n", test_fb->len);
-  esp_camera_fb_return(test_fb);
   
   return true;
 }
 
 // =============================================
-// LOOP PRINCIPAL
+// PROBAR SERVIDOR
 // =============================================
-void loop() {
-  unsigned long currentTime = millis();
+void testServer() {
+  Serial.print("Probando conexión a ");
+  Serial.print(serverIP);
+  Serial.print(":");
+  Serial.print(serverPort);
+  Serial.println("...");
   
-  // Verificar conexión WiFi periódicamente
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("⚠️  WiFi desconectado, reconectando...");
-    if (!connectWiFi()) {
-      delay(5000);
-      return;
+  WiFiClient client;
+  client.setTimeout(3000);
+  
+  if (client.connect(serverIP, serverPort)) {
+    Serial.println("✅ Conexión TCP exitosa");
+    
+    // Enviar request GET
+    client.print("GET /status HTTP/1.1\r\n");
+    client.print("Host: ");
+    client.print(serverIP);
+    client.print(":");
+    client.print(serverPort);
+    client.print("\r\nConnection: close\r\n\r\n");
+    
+    // Esperar respuesta
+    unsigned long timeout = millis();
+    while (!client.available() && millis() - timeout < 5000) {
+      delay(10);
     }
-  }
-  
-  // Tomar y enviar foto cada intervalo
-  if (currentTime - lastCaptureTime >= CAPTURE_INTERVAL || lastCaptureTime == 0) {
-    tomarYEnviarFoto();
-    lastCaptureTime = currentTime;
-  }
-  
-  delay(1000); // Pequeña pausa entre verificaciones
-}
-
-// =============================================
-// CAPTURA Y ENVÍO DE FOTOS
-// =============================================
-void tomarYEnviarFoto() {
-  Serial.println("\n📸 Iniciando ciclo de captura...");
-  
-  // Capturar imagen
-  camera_fb_t * fb = esp_camera_fb_get();
-  if (!fb) {
-    Serial.println("❌ Error: No se pudo capturar imagen");
-    failedAttempts++;
-    return;
-  }
-  
-  Serial.printf("✅ Imagen capturada: %d bytes\n", fb->len);
-  
-  // Intentar enviar con múltiples métodos
-  bool enviada = false;
-  
-  // Método 1: HTTPClient estándar
-  if (!enviada) {
-    Serial.println("🔄 Intentando envío con HTTPClient...");
-    enviada = enviarConHTTPClient(fb->buf, fb->len);
-  }
-  
-  // Método 2: WiFiClient directo
-  if (!enviada) {
-    Serial.println("🔄 Intentando envío con WiFiClient...");
-    enviada = enviarConWiFiClient(fb->buf, fb->len);
-  }
-  
-  // Método 3: Stream
-  if (!enviada) {
-    Serial.println("🔄 Intentando envío con Stream...");
-    enviada = enviarConStream(fb->buf, fb->len);
-  }
-  
-  if (enviada) {
-    Serial.println("✅ Foto enviada correctamente");
-    failedAttempts = 0; // Resetear contador de fallos
-  } else {
-    failedAttempts++;
-    Serial.printf("❌ Fallo en envío (Intentos fallidos: %d)\n", failedAttempts);
     
-    if (failedAttempts >= MAX_FAILED_ATTEMPTS) {
-      Serial.println("🔄 Reiniciando después de múltiples fallos...");
-      ESP.restart();
-    }
-  }
-  
-  // Liberar buffer de la cámara
-  esp_camera_fb_return(fb);
-}
-
-// =============================================
-// MÉTODOS DE ENVÍO (MÚLTIPLES ALTERNATIVAS)
-// =============================================
-
-// Método 1: HTTPClient estándar
-bool enviarConHTTPClient(uint8_t* buffer, size_t length) {
-  if (WiFi.status() != WL_CONNECTED) return false;
-  
-  HTTPClient http;
-  bool success = false;
-  
-  try {
-    Serial.printf("🔗 Conectando a: %s\n", serverURL);
-    http.begin(serverURL);
-    http.addHeader("Content-Type", "image/jpeg");
-    http.addHeader("X-ESP32-CAM", "Traductor");
-    http.setTimeout(15000);
-    
-    Serial.println("📤 Enviando datos...");
-    int httpCode = http.POST(buffer, length);
-    
-    if (httpCode > 0) {
-      Serial.printf("✅ HTTP Code: %d\n", httpCode);
-      if (httpCode == HTTP_CODE_OK) {
-        String response = http.getString();
-        Serial.printf("📨 Respuesta: %s\n", response.c_str());
-        success = true;
+    if (client.available()) {
+      String response = client.readString();
+      if (response.indexOf("200") > 0 || response.indexOf("online") > 0) {
+        Serial.println("✅ Servidor respondió correctamente");
+      } else {
+        Serial.println("⚠️  Servidor respondió pero no es nuestro");
+        Serial.println(response.substring(0, 200));
       }
     } else {
-      Serial.printf("❌ HTTP Error: %s\n", http.errorToString(httpCode).c_str());
-    }
-  } catch (...) {
-    Serial.println("❌ Excepción en HTTPClient");
-  }
-  
-  http.end();
-  return success;
-}
-
-// Método 2: WiFiClient directo
-bool enviarConWiFiClient(uint8_t* buffer, size_t length) {
-  WiFiClient client;
-  bool success = false;
-  
-  Serial.printf("🔗 Conectando a %s:%d...\n", serverHost, serverPort);
-  
-  if (client.connect(serverHost, serverPort)) {
-    Serial.println("✅ Conexión TCP establecida");
-    
-    // Construir request HTTP manualmente
-    client.println("POST /upload HTTP/1.1");
-    client.printf("Host: %s:%d\r\n", serverHost, serverPort);
-    client.println("Content-Type: image/jpeg");
-    client.println("X-ESP32-CAM: Traductor");
-    client.printf("Content-Length: %d\r\n", length);
-    client.println("Connection: close");
-    client.println();
-    
-    // Enviar datos de imagen
-    size_t sent = client.write(buffer, length);
-    Serial.printf("📤 Bytes enviados: %d/%d\n", sent, length);
-    
-    if (sent == length) {
-      // Esperar respuesta
-      unsigned long timeout = millis();
-      while (client.connected() && millis() - timeout < 10000) {
-        if (client.available()) {
-          String line = client.readStringUntil('\n');
-          if (line.startsWith("HTTP")) {
-            Serial.printf("📨 Status: %s\n", line.c_str());
-            if (line.indexOf("200") > 0) {
-              success = true;
-            }
-          }
-        }
-      }
+      Serial.println("⚠️  Servidor no respondió (pero conexión OK)");
     }
     
     client.stop();
   } else {
-    Serial.println("❌ Falló conexión TCP");
+    Serial.println("❌ No se pudo conectar al servidor");
+    Serial.println("💡 Verifica:");
+    Serial.println("   1. Servidor Python corriendo");
+    Serial.println("   2. Firewall desactivado");
+    Serial.println("   3. IP correcta: 172.16.1.149");
   }
-  
-  return success;
 }
 
-// Método 3: Usando Stream (alternativa)
-bool enviarConStream(uint8_t* buffer, size_t length) {
-  if (WiFi.status() != WL_CONNECTED) return false;
+// =============================================
+// CAPTURAR Y ENVIAR FOTO
+// =============================================
+void captureAndSend() {
+  Serial.println("\n📸 Capturando imagen...");
+  
+  camera_fb_t * fb = esp_camera_fb_get();
+  if (!fb) {
+    Serial.println("❌ Error capturando");
+    failedAttempts++;
+    return;
+  }
+  
+  Serial.printf("✅ Imagen: %d bytes\n", fb->len);
+  
+  String url = "http://" + String(serverIP) + ":" + String(serverPort) + "/upload";
+  Serial.print("📤 Enviando a: ");
+  Serial.println(url);
   
   HTTPClient http;
-  bool success = false;
+  http.begin(url);
+  http.addHeader("Content-Type", "image/jpeg");
+  http.addHeader("X-ESP32-CAM", "Traductor");
+  http.setTimeout(10000);
   
-  try {
-    http.begin(serverURL);
-    http.addHeader("Content-Type", "image/jpeg");
+  int httpCode = http.POST(fb->buf, fb->len);
+  
+  if (httpCode > 0) {
+    Serial.printf("📨 HTTP Code: %d\n", httpCode);
     
-    // Crear un stream con los datos
-    WiFiClient *stream = http.getStreamPtr();
-    if (stream) {
-      int httpCode = http.POST((uint8_t*)buffer, length);
-      if (httpCode > 0) {
-        success = (httpCode == HTTP_CODE_OK);
-        Serial.printf("📨 Stream Response: %d\n", httpCode);
-      }
+    if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_ACCEPTED) {
+      String response = http.getString();
+      Serial.print("✅ Éxito! Respuesta: ");
+      Serial.println(response);
+      failedAttempts = 0;
+    } else {
+      Serial.printf("❌ Error HTTP: %s\n", http.errorToString(httpCode).c_str());
+      failedAttempts++;
     }
-  } catch (...) {
-    Serial.println("❌ Excepción en Stream");
+  } else {
+    Serial.printf("❌ Error conexión: %s\n", http.errorToString(httpCode).c_str());
+    failedAttempts++;
   }
   
   http.end();
-  return success;
-}
-
-// =============================================
-// MONITOREO DE ESTADO
-// =============================================
-void printSystemStatus() {
-  Serial.println("\n=== SISTEMA ESP32-CAM ===");
-  Serial.printf("WiFi: %s\n", WiFi.status() == WL_CONNECTED ? "CONECTADO" : "DESCONECTADO");
-  Serial.printf("IP: %s\n", WiFi.localIP().toString().c_str());
-  Serial.printf("Intentos fallidos: %d/%d\n", failedAttempts, MAX_FAILED_ATTEMPTS);
-  Serial.printf("Última captura: %lu ms\n", millis() - lastCaptureTime);
-  Serial.println("==========================\n");
+  esp_camera_fb_return(fb);
+  
+  // Si muchos fallos, reiniciar
+  if (failedAttempts >= 5) {
+    Serial.println("🔄 Demasiados fallos - Reiniciando...");
+    ESP.restart();
+  }
 }

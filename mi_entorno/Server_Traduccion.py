@@ -9,7 +9,16 @@ import sys
 from urllib.parse import urlparse
 
 try:
-    from Treaduccion import TraductorCompleto
+    # Si los archivos están en la misma carpeta
+    from mi_entorno.Treaduccion import TraductorCompleto
+    print("✅ Módulo Treaduccion importado correctamente")
+except ImportError:
+    # Intenta importar de forma relativa
+    try:
+        from .Treaduccion import TraductorCompleto
+    except ImportError:
+        print("❌ No se puede importar Treaduccion")
+        sys.exit(1)
 except ImportError as e:
     print(f"❌ Error importando TraductorCompleto: {e}")
     sys.exit(1)
